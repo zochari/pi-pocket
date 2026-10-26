@@ -8,6 +8,7 @@
 import { execFile } from "node:child_process";
 import { describe, HttpError } from "./errors.ts";
 import { git } from "./git.ts";
+import { jailed, jailPolicy } from "./jail.ts";
 import { snippet } from "./projection.ts";
 
 /** Runs `gh` with arguments, in a folder; resolves to what it printed, or rejects with what it said went wrong. */
@@ -18,21 +19,26 @@ const GH_TIMEOUT_MS = 60_000;
 /** The `gh` on this machine, never asking anything: watches run with nobody there to answer. */
 export const runGh: Gh = (args, cwd, timeoutMs = GH_TIMEOUT_MS) =>
     new Promise((resolve, reject) => {
+        const ghEnv = {
+            GH_PROMPT_DISABLED: "1",
+            GH_NO_UPDATE_NOTIFIER: "1",
+            GIT_TERMINAL_PROMPT: "0",
+            NO_COLOR: "1",
+            CLICOLOR: "0",
+        };
+        // Jailed when the deployment sets a tools jail, like git (see git.ts).
+        const policy = jailPolicy();
+        const run =
+            policy === null ? { file: "gh", args } : jailed(policy, cwd, ["gh", ...args], ghEnv);
+
         execFile(
-            "gh",
-            args,
+            run.file,
+            run.args,
             {
                 ...(cwd === undefined ? {} : { cwd }),
                 timeout: timeoutMs,
                 maxBuffer: 64 * 1024 * 1024,
-                env: {
-                    ...process.env,
-                    GH_PROMPT_DISABLED: "1",
-                    GH_NO_UPDATE_NOTIFIER: "1",
-                    GIT_TERMINAL_PROMPT: "0",
-                    NO_COLOR: "1",
-                    CLICOLOR: "0",
-                },
+                env: { ...process.env, ...ghEnv },
             },
             (error, stdout, stderr) => {
                 if (error === null) {

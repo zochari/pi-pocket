@@ -5,6 +5,7 @@
  * repository configures, such as clean and smudge filters, still run, as they do for any git command there.
  */
 import { execFile } from "node:child_process";
+import { jailed, jailPolicy } from "./jail.ts";
 
 export type GitOptions = {
     /** Exit codes besides 0 that still mean success. */
@@ -28,20 +29,22 @@ export class GitError extends Error {
 export function git(cwd: string, args: string[], options: GitOptions = {}): Promise<string> {
     const { allowExit = [], timeoutMs = 60_000, maxBuffer = 16 * 1024 * 1024 } = options;
 
+    const argv = ["git", "-c", "core.fsmonitor=false", ...args];
+    const gitEnv = { GIT_LITERAL_PATHSPECS: "1", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" };
+    // Jailed when the deployment sets a tools jail: repository-configured programs then run with a tool's rights.
+    const policy = jailPolicy();
+    const run =
+        policy === null ? { file: "git", args: argv.slice(1) } : jailed(policy, cwd, argv, gitEnv);
+
     return new Promise((resolve, reject) => {
         execFile(
-            "git",
-            ["-c", "core.fsmonitor=false", ...args],
+            run.file,
+            run.args,
             {
                 cwd,
                 timeout: timeoutMs,
                 maxBuffer,
-                env: {
-                    ...process.env,
-                    GIT_LITERAL_PATHSPECS: "1",
-                    GIT_OPTIONAL_LOCKS: "0",
-                    LC_ALL: "C",
-                },
+                env: { ...process.env, ...gitEnv },
             },
             (error, stdout, stderr) => {
                 const code = typeof error?.code === "number" ? error.code : undefined;

@@ -83,6 +83,7 @@ import {
     type PocketHost,
     type WebAccess,
 } from "./host.ts";
+import { localEnv } from "./jail.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
 import { takeLock } from "./lock.ts";
 import { Memory } from "./memory.ts";
@@ -1227,7 +1228,7 @@ export class PocketApp {
         let env = this.#envs.get(cwd);
 
         if (env === undefined) {
-            env = new NodeExecutionEnv({ cwd });
+            env = localEnv(cwd);
             this.#envs.set(cwd, env);
         }
 

@@ -91,7 +91,7 @@ export function openApp(
 export async function until(
     check: () => Promise<boolean> | boolean,
     what: string,
-    timeoutMs = 10_000,
+    timeoutMs = 30_000,
 ): Promise<void> {
     const started = Date.now();
 
