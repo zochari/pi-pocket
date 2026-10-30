@@ -14,6 +14,7 @@
   cloudflared,
   chromium,
   util-linux,
+  bubblewrap,
   makeFontsConf,
   dejavu_fonts,
 }:
@@ -84,7 +85,7 @@ stdenv.mkDerivation {
   nativeCheckInputs =
     runtimePackages
     # util-linux provides setsid, needed by the background-task daemon tests on Linux.
-    ++ lib.optionals stdenv.hostPlatform.isLinux [ util-linux ];
+    ++ lib.optionals stdenv.hostPlatform.isLinux [ util-linux bubblewrap ];
   checkPhase = ''
     runHook preCheck
     ${lib.optionalString stdenv.hostPlatform.isLinux ''

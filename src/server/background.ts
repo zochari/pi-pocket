@@ -42,6 +42,7 @@ import type { PocketApp } from "./app.ts";
 import { BackgroundDoc, type BackgroundTask } from "./docs.ts";
 import { HttpError } from "./errors.ts";
 import { defang, quoted } from "./fence.ts";
+import { jailed, jailPolicy } from "./jail.ts";
 import { requestFor } from "./requests.ts";
 
 export type { BackgroundTask } from "./docs.ts";
@@ -74,10 +75,12 @@ const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
  * `split` into segments of the log: `<id>.log.aaaaaa`, `.aaaaab`, … Old segments can then go whole, by a deletion,
  * without rewriting a file the command still writes to. The command's exit code, and `split`'s, are written once the
  * pipe ends: a log that failed (a full disk) is told, not hidden behind the command's code. A stop
- * signals the whole group, the wrapper too, so a stopped command leaves no exit code.
+ * signals the whole group, the wrapper too, so a stopped command leaves no exit code. This fixed log writer stays
+ * outside the tools jail: the data folder is deliberately hidden there. Only the argv it calls runs model commands,
+ * through the same jail as bash. No command text is evaluated by the log writer.
  */
 const WRAPPER =
-    'cmd=$PI_POCKET_BACKGROUND_COMMAND; out=$PI_POCKET_BACKGROUND_EXIT; log=$PI_POCKET_BACKGROUND_LOG; size=$PI_POCKET_BACKGROUND_SEGMENT; unset PI_POCKET_BACKGROUND_COMMAND PI_POCKET_BACKGROUND_EXIT PI_POCKET_BACKGROUND_LOG PI_POCKET_BACKGROUND_SEGMENT; bash -c "$cmd" 2>&1 | split -a 6 -b "$size" - "$log"; codes=("${PIPESTATUS[@]}"); printf "%s %s" "${codes[0]}" "${codes[1]}" > "$out"';
+    'out=$PI_POCKET_BACKGROUND_EXIT; log=$PI_POCKET_BACKGROUND_LOG; size=$PI_POCKET_BACKGROUND_SEGMENT; unset PI_POCKET_BACKGROUND_EXIT PI_POCKET_BACKGROUND_LOG PI_POCKET_BACKGROUND_SEGMENT; "$@" 2>&1 | split -a 6 -b "$size" - "$log"; codes=("${PIPESTATUS[@]}"); printf "%s %s" "${codes[0]}" "${codes[1]}" > "$out"';
 /** The size of a log's segments, unless a test sets another; each task keeps the size it started with. */
 const SEGMENT_BYTES = 4 * 1024 * 1024;
 /** How often a watch keeps its task's log short, whatever its looks at the processes. */
@@ -1315,15 +1318,20 @@ export class BackgroundTasks {
     #spawn(conversationId: ConversationId, item: BackgroundTask, added: Record<string, string>) {
         mkdirSync(this.#dir(conversationId), { recursive: true });
 
-        const child = spawn("bash", ["-c", WRAPPER], {
+        const policy = jailPolicy();
+        const env = { ...added, [BACKGROUND_MARKER]: this.#marker(conversationId, item.id) };
+        const argv = ["bash", "-c", item.command];
+        const run =
+            policy === null
+                ? { file: argv[0]!, args: argv.slice(1) }
+                : jailed(policy, item.cwd, argv, env);
+        const child = spawn("bash", ["-c", WRAPPER, "background", run.file, ...run.args], {
             cwd: item.cwd,
             detached: true,
             stdio: "ignore",
             env: {
                 ...process.env,
-                ...added,
-                [BACKGROUND_MARKER]: this.#marker(conversationId, item.id),
-                PI_POCKET_BACKGROUND_COMMAND: item.command,
+                ...(policy === null ? env : { [BACKGROUND_MARKER]: env[BACKGROUND_MARKER] }),
                 PI_POCKET_BACKGROUND_EXIT: this.#exitFile(conversationId, item.id),
                 PI_POCKET_BACKGROUND_LOG: this.#logPrefix(conversationId, item.id),
                 PI_POCKET_BACKGROUND_SEGMENT: String(item.segment ?? SEGMENT_BYTES),
