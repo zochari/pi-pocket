@@ -402,7 +402,7 @@ Makes a session linked to `source` and sends it `message` as its first message. 
 - The new session works in `cwd` when supplied, otherwise the folder of `source`. `cwd` must name an existing folder and uses the normal folder-picker path rules. A blank `cwd` counts as no `cwd`. A relative `cwd` resolves against the folder of the server process, not the folder of the source. `cwd` is since 0.19.0: an older Pi Pocket ignores it and uses the folder of `source`, so a gallery entry that needs it sets `minPocket` to `0.19.0`. It gets a copy of the agent settings of `source`, but not its history.
 - Without `title`, the title is the first line of `message`.
 - `model` is `provider/modelId`. While the owner's list of models for subagents is empty, it must be the model of `source`. Once the list has models, it must be one of them. Without it, the session uses the model of `source` when the list is empty or has it. Otherwise `start` is refused with an error that names the allowed models.
-- `thinking` is a level no higher than the level of `source`. Without it, the session uses the level of `source`. Pi Pocket lowers it to the highest level that the model has.
+- `thinking` can be any level, also one above the level of `source`. Without it, the session uses the level of `source`. Pi Pocket lowers it to the highest level that the model has, or uses the lowest level of the model when it has none that low.
 - When Pi cannot use the model now, `start` makes nothing and throws an error.
 
 #### `linkedSessions.send`
@@ -679,7 +679,8 @@ The host has more members, for Pi Pocket's built-in modules only. They are not i
 
 - `approvals`: tool calls that wait for a person to allow them.
 - `guard`: Lancet Guard.
-- `schedules`: scheduled messages, for the schedule tool.
+- `schedules`: scheduled messages, for the schedule tool. `schedules.limits` holds the limits in force (`perSession`, `chars`, `repeatMinutes`, `aheadDays`); the schedules module copies the owner's settings into it, so a module should read it and not change it. A server from before 0.24.0 has no `limits`.
+- `background`: commands Pi runs in the background, for the background tool: `start`, `read`, `stop`, `list`, and `limits` (`running`, which the background module copies from the owner's setting). A server from before 0.24.0 has none.
 - `goals`: Done when, for the goals module.
 - `browsers`: the built-in browser, for the browser tool.
 - `memory`: the lessons that Pi keeps across sessions, for the memory tool.
@@ -688,3 +689,4 @@ The host has more members, for Pi Pocket's built-in modules only. They are not i
 - `pip`: what the tools of PiP, the owner's assistant, do.
 - `pipCompaction`: PiP's own summaries when its context is compacted.
 - `gallery`: the extension gallery, for its own routes.
+- `updates`: updates of Pi Pocket itself, for the Updates module's routes. Its status says how the copy was installed (`installKind`: `git`, `npm-global`, `npm-local`, `npx`, or `unknown`) and what stands in the way of an update from the app.

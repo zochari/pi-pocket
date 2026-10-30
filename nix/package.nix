@@ -13,6 +13,7 @@
   fd,
   cloudflared,
   chromium,
+  util-linux,
   makeFontsConf,
   dejavu_fonts,
 }:
@@ -80,7 +81,10 @@ stdenv.mkDerivation {
   dontStrip = true;
 
   doCheck = true;
-  nativeCheckInputs = runtimePackages;
+  nativeCheckInputs =
+    runtimePackages
+    # util-linux provides setsid, needed by the background-task daemon tests on Linux.
+    ++ lib.optionals stdenv.hostPlatform.isLinux [ util-linux ];
   checkPhase = ''
     runHook preCheck
     ${lib.optionalString stdenv.hostPlatform.isLinux ''
