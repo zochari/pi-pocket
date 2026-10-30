@@ -17,6 +17,8 @@ const reviewed: Record<string, string> = {
         "server-internal, fixed command: Chromium infrastructure; executable and flags are server configuration, with a separate browser jail in the Nix deployment.",
     "src/server/git.ts": "jailed: git and repository-configured programs use jailed().",
     "src/server/github.ts": "jailed: gh uses jailed().",
+    "src/server/jail.ts":
+        "jailed: only this module constructs or extends NodeExecutionEnv, behind the tools policy.",
     "src/server/lock.ts": "server-internal, fixed command: getconf CLK_TCK probe.",
     "src/server/npm-install.ts":
         "server-internal, fixed command: npm root -g install-detection probe.",
@@ -39,6 +41,12 @@ function sources(dir: string): string[] {
 }
 
 // Module references plus bare process API calls: also review new calls in an already listed file.
+// Updater code never runs in the read-only Nix deployment; its qualified file-level reviews above are sufficient.
+const fileLevel = new Set([
+    "src/server/npm-update.ts",
+    "src/server/update-state.ts",
+    "src/server/updates.ts",
+]);
 const reviewedCounts: Record<string, number> = {
     "src/launcher/access.ts": 3,
     "src/launcher/main.ts": 3,
@@ -46,22 +54,33 @@ const reviewedCounts: Record<string, number> = {
     "src/server/browser/cdp.ts": 2,
     "src/server/git.ts": 2,
     "src/server/github.ts": 2,
+    "src/server/jail.ts": 2,
     "src/server/lock.ts": 2,
     "src/server/npm-install.ts": 2,
-    "src/server/npm-update.ts": 2,
     "src/server/reveal.ts": 2,
-    "src/server/update-state.ts": 3,
-    "src/server/updates.ts": 2,
 };
 
-function launcherCount(code: string): number {
+function launcherCount(code: string, onEnvironment?: () => void): number {
     let count = 0;
 
     // Parse instead of matching text: comments, strings, RegExp.exec and method declarations are not spawn calls.
     // Module references catch aliases, namespace imports, require() and dynamic import() as well as named imports.
     function visit(node: ts.Node): void {
+        // Imports and type references do not create an environment; value uses (including extends) can.
+        const environment =
+            ts.isIdentifier(node) &&
+            node.text === "NodeExecutionEnv" &&
+            !ts.isImportSpecifier(node.parent) &&
+            !ts.isTypeReferenceNode(node.parent);
+
+        if (environment) {
+            onEnvironment?.();
+        }
+
         if (
-            (ts.isStringLiteral(node) && /^(?:node:)?child_process$/.test(node.text)) ||
+            ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+                /^(?:node:)?child_process$/.test(node.text)) ||
+            environment ||
             (ts.isCallExpression(node) &&
                 ts.isIdentifier(node.expression) &&
                 /^(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)$/.test(
@@ -95,17 +114,31 @@ test("the spawn scanner finds imports and calls, not comments or unrelated metho
     assert.ok(launcherCount('import { spawn as run } from "node:child_process"'));
     assert.ok(launcherCount('const cp = require("child_process"); cp.exec("command")'));
     assert.ok(launcherCount('await import("node:child_process")'));
+    assert.ok(launcherCount("await import(`node:child_process`)"));
+    assert.equal(launcherCount("new NodeExecutionEnv({ cwd })"), 1);
+    assert.equal(launcherCount("class Custom extends NodeExecutionEnv {}"), 1);
+    assert.equal(
+        launcherCount('import { NodeExecutionEnv } from "env"; let env: NodeExecutionEnv;'),
+        0,
+    );
     assert.equal(launcherCount('/* spawn() */ "fork()"; /x/.exec("x"); class X { exec() {} }'), 0);
 });
 
 test("every process-spawn source file has a reviewed jail decision", () => {
     const root = fileURLToPath(new URL("../", import.meta.url));
-    const found = sources(join(root, "src"))
+    const found = ["src", "bin"]
+        .flatMap((dir) => sources(join(root, dir)))
         .map(
             (path) =>
                 [
                     relative(root, path).replaceAll("\\", "/"),
-                    launcherCount(readFileSync(path, "utf8")),
+                    launcherCount(readFileSync(path, "utf8"), () => {
+                        assert.equal(
+                            path,
+                            join(root, "src/server/jail.ts"),
+                            "NodeExecutionEnv value uses must stay in src/server/jail.ts.",
+                        );
+                    }),
                 ] as const,
         )
         .filter(([, count]) => count > 0);
@@ -119,7 +152,7 @@ test("every process-spawn source file has a reviewed jail decision", () => {
     );
     assert.deepEqual(Object.keys(reviewed).sort(), files, "Remove stale spawn-review entries.");
     assert.deepEqual(
-        Object.fromEntries(found),
+        Object.fromEntries(found.filter(([path]) => !fileLevel.has(path))),
         reviewedCounts,
         "Process-spawn sites changed. Route new sites through the jail or add a justified review entry and update reviewedCounts.",
     );

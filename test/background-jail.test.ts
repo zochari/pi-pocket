@@ -16,33 +16,6 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const root = mkdtempSync(join(tmpdir(), "pocket-background-jail-"));
-const data = join(root, "data");
-const launcher = join(root, "jail-exec");
-const policyFile = join(root, "policy.json");
-const previousPolicy = process.env.PI_POCKET_TOOLS_POLICY;
-const previousSecret = process.env.POCKET_JAIL_TEST_SECRET;
-const policy = { jail_exec: launcher, file_deny: [data], file_allow: [] };
-
-mkdirSync(data);
-writeFileSync(join(data, "secret"), "denied-file-secret");
-writeFileSync(
-    launcher,
-    `#!${process.execPath}\nimport ${JSON.stringify(fileURLToPath(new URL("./jail-launcher.ts", import.meta.url)))};\n`,
-);
-chmodSync(launcher, 0o755);
-writeFileSync(policyFile, JSON.stringify(policy));
-process.env.PI_POCKET_TOOLS_POLICY = policyFile;
-Reflect.set(process.env, "POCKET_JAIL_TEST_SECRET", ["server", "only", "secret"].join("-"));
-
-// Set the policy before the app (and its cached policy) is imported.
-const { cleanUp, newSession, openApp, scriptedModel, until } = await import("./helpers.ts");
-const model = scriptedModel();
-let app = await openApp(model, data);
-
-app.background.timing = { look: 50, grace: 400, starting: 300, sweep: 60_000 };
-
-const sessions = new Set<Parameters<typeof app.background.list>[0]>();
 const skip = existsSync("/proc/self/stat") ? false : "background tasks need /proc";
 const probe = spawnSync("bwrap", [
     "--unshare-user",
@@ -58,6 +31,45 @@ const probe = spawnSync("bwrap", [
     "true",
 ]);
 const noBwrap = probe.status === 0 ? false : "bubblewrap or user namespaces unavailable";
+
+if (process.env.PI_POCKET_REQUIRE_JAIL_TESTS === "1" && (skip || noBwrap)) {
+    throw new Error(
+        "PI_POCKET_REQUIRE_JAIL_TESTS=1 requires bubblewrap and working user namespaces.",
+    );
+}
+
+const root = mkdtempSync(join(tmpdir(), "pocket-background-jail-"));
+const data = join(root, "data");
+const launcher = join(root, "jail-exec");
+const previousPolicy = process.env.PI_POCKET_TOOLS_POLICY;
+const previousSecret = process.env.POCKET_JAIL_TEST_SECRET;
+const policy = { jail_exec: launcher, file_deny: [data], file_allow: [] };
+
+function usePolicy(name: string, bwrap = false): void {
+    const file = join(root, `${name}.policy.json`);
+
+    writeFileSync(file, JSON.stringify({ ...policy, ...(bwrap ? { bwrap: "bwrap" } : {}) }));
+    process.env.PI_POCKET_TOOLS_POLICY = file;
+}
+
+mkdirSync(data);
+writeFileSync(join(data, "secret"), "denied-file-secret");
+writeFileSync(
+    launcher,
+    `#!${process.execPath}\nimport ${JSON.stringify(fileURLToPath(new URL("./jail-launcher.ts", import.meta.url)))};\n`,
+);
+chmodSync(launcher, 0o755);
+usePolicy("startup");
+Reflect.set(process.env, "POCKET_JAIL_TEST_SECRET", ["server", "only", "secret"].join("-"));
+
+// Set the policy before the app (and its cached policy) is imported.
+const { cleanUp, newSession, openApp, scriptedModel, until } = await import("./helpers.ts");
+const model = scriptedModel();
+let app = await openApp(model, data);
+
+app.background.timing = { look: 50, grace: 400, starting: 300, sweep: 60_000 };
+
+const sessions = new Set<Parameters<typeof app.background.list>[0]>();
 
 function alive(pid: number): boolean {
     try {
@@ -143,6 +155,8 @@ test(
     "background uses the jail launcher and explicit additions, not the server environment",
     { skip },
     async () => {
+        usePolicy("environment");
+
         const remove = app.commandEnvs.add(() => ({ POCKET_BACKGROUND_ADDED: "explicit" }));
 
         try {
@@ -169,11 +183,26 @@ test(
     },
 );
 
+test("command substitutions and option-like text stay on the jailed side", { skip }, async () => {
+    usePolicy("command-text");
+
+    const id = await session();
+    const literal = "--setenv POCKET_JAIL_TEST_SECRET bypass; $(echo OUTER)";
+    const task = await app.background.start(id, {
+        command: `printf 'scope:%s:%s\\n' "$(printf %s \"$PI_POCKET_JAILED\")" "$(printf %s \"\${POCKET_JAIL_TEST_SECRET-unset}\")"; printf '%s\\n' '${literal}'; test -z "\${PI_POCKET_BACKGROUND_COMMAND-}" || exit 1; exit 19`,
+        notify: false,
+    });
+    const result = await ended(id, task.id);
+
+    assert.equal(result.code, 19);
+    assert.equal((await app.background.read(id, task.id))!.text, `scope:1:unset\n${literal}\n`);
+});
+
 test(
     "a background command cannot read server secrets, denied files, or the server's /proc environment",
     { skip: skip || noBwrap },
     async () => {
-        writeFileSync(policyFile, JSON.stringify({ ...policy, bwrap: "bwrap" }));
+        usePolicy("denied", true);
 
         const id = await session();
         const task = await app.background.start(id, {
@@ -197,6 +226,8 @@ test(
     "a jailed task keeps its detached wrapper across restart, and stops its private process tree",
     { skip: skip || noBwrap },
     async () => {
+        usePolicy("restart", true);
+
         const id = await session();
         const task = await app.background.start(id, {
             command: "echo ready; bash -c 'trap \"\" TERM; sleep 300' & wait",
@@ -238,6 +269,8 @@ test(
     "the private PID namespace removes daemons when the command exits",
     { skip: skip || noBwrap },
     async () => {
+        usePolicy("daemon", true);
+
         const id = await session();
         const gate = join(app.cwdOf(id), "release-jailed-daemon");
         const task = await app.background.start(id, {

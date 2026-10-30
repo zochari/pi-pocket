@@ -89,6 +89,7 @@ stdenv.mkDerivation {
   checkPhase = ''
     runHook preCheck
     ${lib.optionalString stdenv.hostPlatform.isLinux ''
+      export PI_POCKET_REQUIRE_JAIL_TESTS=1
       # The build sandbox cannot host Chromium's sandbox or its shared-memory usage.
       export PI_POCKET_BROWSER_ARGS="--no-sandbox --disable-dev-shm-usage"
       # Plain HTML in the browser tests needs fonts, even without a desktop installed.
